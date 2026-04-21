@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pointing a story — The Story Pointer</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..800;1,9..144,300..800&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body class="page-room">
+    <div class="grain" aria-hidden="true"></div>
+
+    <!-- Name gate (shown if we don't have a name in storage) -->
+    <dialog id="name-dialog" class="dialog">
+      <form method="dialog" id="name-form">
+        <h2>Join the room</h2>
+        <p class="dialog__lede">
+          You're joining <code id="dialog-code" class="code">—</code>. What
+          should we call you?
+        </p>
+        <label class="cta__label" for="dialog-name">Display name</label>
+        <input
+          id="dialog-name"
+          type="text"
+          maxlength="40"
+          placeholder="e.g. Priya"
+          autocomplete="nickname"
+          required
+        />
+        <button class="btn btn--primary" type="submit">Enter room</button>
+      </form>
+    </dialog>
+
+    <header class="room-header">
+      <a class="wordmark wordmark--small" href="/" aria-label="home">
+        <svg width="22" height="28" viewBox="0 0 26 32" aria-hidden="true">
+          <rect
+            x="1"
+            y="1"
+            width="24"
+            height="30"
+            rx="3"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+          <text
+            x="13"
+            y="22"
+            text-anchor="middle"
+            font-family="Fraunces, serif"
+            font-size="16"
+            font-style="italic"
+            fill="currentColor"
+          >
+            8
+          </text>
+        </svg>
+      </a>
+
+      <div class="room-header__center">
+        <div class="room-header__story" data-host-only>
+          <input
+            id="story-input"
+            type="text"
+            maxlength="200"
+            placeholder="What are we estimating? (story title, ticket link, etc.)"
+            aria-label="story title"
+          />
+        </div>
+        <div class="room-header__story room-header__story--readonly" data-guest-only hidden>
+          <span id="story-display">Waiting for the host to set a story…</span>
+        </div>
+      </div>
+
+      <div class="room-header__right">
+        <button id="copy-link" class="chip" title="Copy invite link">
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M6 10a4 4 0 0 0 5.66 0l2-2a4 4 0 0 0-5.66-5.66l-.7.7M10 6a4 4 0 0 0-5.66 0l-2 2a4 4 0 0 0 5.66 5.66l.7-.7"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span class="chip__label">Code</span>
+          <span id="room-code" class="chip__code">——————</span>
+        </button>
+        <span id="conn-indicator" class="conn conn--connecting" title="connection">
+          <span class="conn__dot"></span>
+          <span class="conn__label">connecting</span>
+        </span>
+      </div>
+    </header>
+
+    <main class="room">
+      <section class="table-wrap">
+        <div class="table" id="table">
+          <div class="table__felt" aria-hidden="true"></div>
+
+          <div class="table__center" id="table-center">
+            <!-- filled by JS: either "Waiting…" / Reveal button / Results -->
+          </div>
+
+          <ul class="seats" id="seats" aria-label="participants">
+            <!-- seats populated by JS -->
+          </ul>
+        </div>
+
+        <div class="stats" id="stats" hidden>
+          <div class="stats__row">
+            <div class="stats__stat">
+              <span class="stats__label">Average</span>
+              <span class="stats__val" id="stat-avg">—</span>
+            </div>
+            <div class="stats__stat">
+              <span class="stats__label">Median</span>
+              <span class="stats__val" id="stat-median">—</span>
+            </div>
+            <div class="stats__stat">
+              <span class="stats__label">Spread</span>
+              <span class="stats__val" id="stat-spread">—</span>
+            </div>
+            <div class="stats__stat">
+              <span class="stats__label">Consensus</span>
+              <span class="stats__val" id="stat-consensus">—</span>
+            </div>
+          </div>
+          <div class="stats__dist" id="stat-dist" aria-label="vote distribution"></div>
+        </div>
+      </section>
+
+      <section class="deck-wrap" aria-label="your hand">
+        <div class="deck-wrap__rail">
+          <div class="deck-wrap__you">
+            <span class="deck-wrap__label">Your card</span>
+            <strong id="your-card" class="deck-wrap__val">—</strong>
+          </div>
+
+          <ul class="deck" id="deck">
+            <!-- cards populated by JS -->
+          </ul>
+
+          <div class="deck-wrap__controls" data-host-only>
+            <button id="reveal-btn" class="btn btn--primary" type="button">
+              Reveal cards
+            </button>
+            <button id="reset-btn" class="btn btn--ghost" type="button">
+              New round
+            </button>
+            <details class="menu">
+              <summary aria-label="more options">
+                <svg width="18" height="4" viewBox="0 0 18 4" aria-hidden="true">
+                  <circle cx="2" cy="2" r="1.5" fill="currentColor" />
+                  <circle cx="9" cy="2" r="1.5" fill="currentColor" />
+                  <circle cx="16" cy="2" r="1.5" fill="currentColor" />
+                </svg>
+              </summary>
+              <div class="menu__panel">
+                <label class="menu__field">
+                  <span>Deck</span>
+                  <select id="deck-select">
+                    <option value="fibonacci">Fibonacci</option>
+                    <option value="modfib">Modified Fibonacci</option>
+                    <option value="tshirt">T-shirt</option>
+                    <option value="powers">Powers of 2</option>
+                  </select>
+                </label>
+                <button id="copy-link-2" class="menu__btn" type="button">Copy invite link</button>
+                <a class="menu__btn menu__btn--link" href="/">Leave room</a>
+              </div>
+            </details>
+          </div>
+
+          <div class="deck-wrap__controls" data-guest-only hidden>
+            <span class="deck-wrap__hint" id="guest-hint">Pick a card. Others won't see it until the host reveals.</span>
+            <a class="btn btn--ghost" href="/">Leave</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/js/room.js"></script>
+  </body>
+</html>
