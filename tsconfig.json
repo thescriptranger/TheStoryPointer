@@ -9,12 +9,10 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "src",
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
-    "declaration": false,
-    "sourceMap": true
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["src/server/**/*", "src/shared/**/*"]
+  "include": ["api/**/*", "lib/**/*", "server-local.ts"]
 }

@@ -1,20 +1,23 @@
 import type {
-  ClientMessage,
-  ServerMessage,
-  PublicSession,
+  ActionRequest,
   PublicParticipant,
+  PublicSession,
   DeckPreset,
-} from '../shared/types.js';
+} from '../../lib/types.js';
 
-// ─── Config / state ────────────────────────────────────────────────────────
+// ─── State ────────────────────────────────────────────────────────────────
 
 const code = location.pathname.replace(/^\/r\//, '').toUpperCase();
 let participantId: string | null = null;
 let session: PublicSession | null = null;
-let ws: WebSocket | null = null;
-let reconnectDelay = 500;
-let reconnectTimer: number | null = null;
-let manualClose = false;
+let pollTimer: number | null = null;
+let pollInFlight = false;
+let consecutiveErrors = 0;
+let pollAbort: AbortController | null = null;
+
+const FAST_POLL_MS = 2000;
+const SLOW_POLL_MS = 5000;
+const pollInterval = () => (document.hidden ? SLOW_POLL_MS : FAST_POLL_MS);
 
 const storageKey = `spp:${code}`;
 
@@ -26,8 +29,7 @@ interface Stored {
 function readStored(): Stored | null {
   try {
     const raw = localStorage.getItem(storageKey);
-    if (!raw) return null;
-    return JSON.parse(raw) as Stored;
+    return raw ? (JSON.parse(raw) as Stored) : null;
   } catch {
     return null;
   }
@@ -49,7 +51,7 @@ function clearStored() {
   }
 }
 
-// ─── DOM refs ──────────────────────────────────────────────────────────────
+// ─── DOM refs ─────────────────────────────────────────────────────────────
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T | null;
@@ -82,7 +84,7 @@ const toast = $('toast');
 if (dialogCode) dialogCode.textContent = code;
 if (roomCode) roomCode.textContent = code;
 
-// ─── Connection lifecycle ──────────────────────────────────────────────────
+// ─── Transport ─────────────────────────────────────────────────────────────
 
 function setConn(state: 'connecting' | 'open' | 'closed') {
   if (!connIndicator) return;
@@ -90,94 +92,127 @@ function setConn(state: 'connecting' | 'open' | 'closed') {
   const label = connIndicator.querySelector('.conn__label');
   if (label) {
     label.textContent =
-      state === 'connecting'
-        ? 'connecting'
-        : state === 'open'
-          ? 'live'
-          : 'offline';
+      state === 'connecting' ? 'connecting' : state === 'open' ? 'live' : 'offline';
   }
 }
 
-function openSocket(name: string, existingId: string | null) {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const sock = new WebSocket(`${proto}://${location.host}/ws`);
-  ws = sock;
-  setConn('connecting');
-
-  sock.addEventListener('open', () => {
-    reconnectDelay = 500;
-    const msg: ClientMessage = {
-      type: 'join',
-      code,
-      name,
-      existingId: existingId || undefined,
+async function joinApi(name: string, existingId: string | null): Promise<boolean> {
+  try {
+    const resp = await fetch(`/api/sessions/${code}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'join',
+        name,
+        existingId: existingId || undefined,
+      }),
+    });
+    if (resp.status === 404) {
+      clearStored();
+      showToast('This session no longer exists.');
+      setTimeout(() => (location.href = '/'), 1500);
+      return false;
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = (await resp.json()) as {
+      participantId: string;
+      session: PublicSession;
     };
-    sock.send(JSON.stringify(msg));
-  });
+    participantId = data.participantId;
+    writeStored({ participantId, name });
+    session = data.session;
+    setConn('open');
+    render();
+    return true;
+  } catch {
+    setConn('closed');
+    consecutiveErrors++;
+    return false;
+  }
+}
 
-  sock.addEventListener('message', (ev) => {
-    let msg: ServerMessage;
-    try {
-      msg = JSON.parse(ev.data) as ServerMessage;
-    } catch {
+async function pollOnce(): Promise<void> {
+  if (!participantId || pollInFlight) return;
+  pollInFlight = true;
+  pollAbort = new AbortController();
+  try {
+    const resp = await fetch(
+      `/api/sessions/${code}?pid=${encodeURIComponent(participantId)}`,
+      { signal: pollAbort.signal }
+    );
+    if (resp.status === 404) {
+      clearStored();
+      showToast('This session no longer exists.');
+      setTimeout(() => (location.href = '/'), 1500);
       return;
     }
-    handleServer(msg);
-  });
-
-  sock.addEventListener('close', () => {
-    setConn('closed');
-    ws = null;
-    if (manualClose) return;
-    reconnectDelay = Math.min(reconnectDelay * 1.7, 8000);
-    reconnectTimer = window.setTimeout(() => {
-      const stored = readStored();
-      if (stored) openSocket(stored.name, stored.participantId);
-    }, reconnectDelay);
-  });
-
-  sock.addEventListener('error', () => {
-    // close handler will schedule reconnect
-  });
-}
-
-function send(msg: ClientMessage) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
-  }
-}
-
-function handleServer(msg: ServerMessage) {
-  switch (msg.type) {
-    case 'joined': {
-      participantId = msg.participantId;
-      const stored = readStored();
-      writeStored({ participantId, name: stored?.name || '' });
-      session = msg.session;
-      setConn('open');
-      render();
-      break;
-    }
-    case 'state':
-      session = msg.session;
-      render();
-      break;
-    case 'kicked':
-      manualClose = true;
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = (await resp.json()) as { session: PublicSession; kicked?: boolean };
+    if (data.kicked) {
       clearStored();
       showToast('You were removed from the room.');
       setTimeout(() => (location.href = '/'), 1200);
-      break;
-    case 'error':
-      if (msg.message === 'Session not found') {
-        manualClose = true;
+      return;
+    }
+    session = data.session;
+
+    // If my pid disappeared (race) — treat as kicked.
+    if (!session.participants.some((p) => p.id === participantId)) {
+      clearStored();
+      showToast('You were removed from the room.');
+      setTimeout(() => (location.href = '/'), 1200);
+      return;
+    }
+
+    consecutiveErrors = 0;
+    setConn('open');
+    render();
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') return;
+    consecutiveErrors++;
+    if (consecutiveErrors >= 2) setConn('closed');
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+function schedulePoll() {
+  if (pollTimer !== null) window.clearTimeout(pollTimer);
+  pollTimer = window.setTimeout(async () => {
+    await pollOnce();
+    schedulePoll();
+  }, pollInterval());
+}
+
+async function sendAction(msg: ActionRequest): Promise<void> {
+  if (!participantId) return;
+  try {
+    const resp = await fetch(`/api/sessions/${code}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(msg),
+    });
+    if (!resp.ok) {
+      if (resp.status === 404) {
         clearStored();
         showToast('This session no longer exists.');
         setTimeout(() => (location.href = '/'), 1500);
+      } else if (resp.status === 403) {
+        showToast('Only the host can do that.');
       } else {
-        showToast(msg.message);
+        const body = (await resp.json().catch(() => null)) as { error?: string } | null;
+        if (body?.error) showToast(body.error);
       }
-      break;
+      return;
+    }
+    const data = (await resp.json()) as { session: PublicSession };
+    session = data.session;
+    consecutiveErrors = 0;
+    setConn('open');
+    render();
+  } catch {
+    consecutiveErrors++;
+    if (consecutiveErrors >= 2) setConn('closed');
   }
 }
 
@@ -194,7 +229,7 @@ function showToast(msg: string) {
   }, 2200);
 }
 
-// ─── Rendering ─────────────────────────────────────────────────────────────
+// ─── Render ────────────────────────────────────────────────────────────────
 
 function render() {
   if (!session) return;
@@ -208,7 +243,6 @@ function render() {
     el.hidden = isHost;
   });
 
-  // Story title
   if (storyInput && document.activeElement !== storyInput) {
     storyInput.value = session.storyTitle || '';
   }
@@ -217,7 +251,6 @@ function render() {
       session.storyTitle || 'Waiting for the host to set a story…';
   }
 
-  // Deck selector
   if (deckSelect && deckSelect.value !== session.deck) {
     deckSelect.value = session.deck;
   }
@@ -230,11 +263,6 @@ function render() {
 
 function renderSeats(me: PublicParticipant | undefined) {
   if (!seatsEl || !session) return;
-  const prev = new Map<string, HTMLLIElement>();
-  seatsEl.querySelectorAll<HTMLLIElement>('li[data-id]').forEach((el) => {
-    prev.set(el.dataset.id!, el);
-  });
-
   seatsEl.textContent = '';
   for (const p of session.participants) {
     const li = document.createElement('li');
@@ -271,7 +299,6 @@ function renderSeats(me: PublicParticipant | undefined) {
       li.appendChild(tag);
     }
 
-    // Host kick button (not on self)
     if (me?.isHost && p.id !== participantId) {
       const kick = document.createElement('button');
       kick.type = 'button';
@@ -280,12 +307,11 @@ function renderSeats(me: PublicParticipant | undefined) {
       kick.textContent = '×';
       kick.addEventListener('click', () => {
         if (confirm(`Remove ${p.name} from the room?`)) {
-          send({ type: 'kick', targetId: p.id });
+          sendAction({ action: 'kick', participantId: participantId!, targetId: p.id });
         }
       });
       li.appendChild(kick);
     }
-
     seatsEl.appendChild(li);
   }
 }
@@ -303,45 +329,76 @@ function renderCenter(me: PublicParticipant | undefined, isHost: boolean) {
       .filter((v): v is number => v !== null);
 
     if (numericVotes.length === 0) {
-      tableCenter.appendChild(buildCenterPill({
-        eyebrow: 'Revealed',
-        big: '—',
-        sub: 'No numeric votes to summarise',
-        button: isHost ? { label: 'New round', handler: () => send({ type: 'reset' }) } : null,
-      }));
+      tableCenter.appendChild(
+        buildCenterPill({
+          eyebrow: 'Revealed',
+          big: '—',
+          sub: 'No numeric votes to summarise',
+          button: isHost
+            ? {
+                label: 'New round',
+                handler: () =>
+                  sendAction({ action: 'reset', participantId: participantId! }),
+              }
+            : null,
+        })
+      );
     } else {
       const avg = numericVotes.reduce((a, b) => a + b, 0) / numericVotes.length;
-      tableCenter.appendChild(buildCenterPill({
-        eyebrow: 'Team average',
-        big: formatNumber(avg),
-        sub: consensusLabel(numericVotes),
-        button: isHost ? { label: 'New round', handler: () => send({ type: 'reset' }) } : null,
-      }));
+      tableCenter.appendChild(
+        buildCenterPill({
+          eyebrow: 'Team average',
+          big: formatNumber(avg),
+          sub: consensusLabel(numericVotes),
+          button: isHost
+            ? {
+                label: 'New round',
+                handler: () =>
+                  sendAction({ action: 'reset', participantId: participantId! }),
+              }
+            : null,
+        })
+      );
     }
   } else if (voters.length === 0) {
-    tableCenter.appendChild(buildCenterPill({
-      eyebrow: 'Waiting',
-      title: 'Nobody here yet.',
-      sub: 'Share the code in chat to get teammates in.',
-      button: null,
-    }));
+    tableCenter.appendChild(
+      buildCenterPill({
+        eyebrow: 'Waiting',
+        title: 'Nobody here yet.',
+        sub: 'Share the code in chat to get teammates in.',
+        button: null,
+      })
+    );
   } else if (voted === voters.length) {
-    tableCenter.appendChild(buildCenterPill({
-      eyebrow: "Everyone's ready",
-      title: `${voted} of ${voters.length} have voted.`,
-      button: isHost
-        ? { label: 'Reveal cards', handler: () => send({ type: 'reveal' }), primary: true }
-        : { label: 'Waiting for host to reveal…', handler: null },
-    }));
+    tableCenter.appendChild(
+      buildCenterPill({
+        eyebrow: "Everyone's ready",
+        title: `${voted} of ${voters.length} have voted.`,
+        button: isHost
+          ? {
+              label: 'Reveal cards',
+              handler: () =>
+                sendAction({ action: 'reveal', participantId: participantId! }),
+              primary: true,
+            }
+          : { label: 'Waiting for host to reveal…', handler: null },
+      })
+    );
   } else {
-    tableCenter.appendChild(buildCenterPill({
-      eyebrow: 'In progress',
-      title: `${voted} of ${voters.length} have voted.`,
-      sub: me?.hasVoted ? 'Your card is locked in.' : 'Pick a card below.',
-      button: isHost
-        ? { label: 'Reveal now', handler: () => send({ type: 'reveal' }) }
-        : null,
-    }));
+    tableCenter.appendChild(
+      buildCenterPill({
+        eyebrow: 'In progress',
+        title: `${voted} of ${voters.length} have voted.`,
+        sub: me?.hasVoted ? 'Your card is locked in.' : 'Pick a card below.',
+        button: isHost
+          ? {
+              label: 'Reveal now',
+              handler: () =>
+                sendAction({ action: 'reveal', participantId: participantId! }),
+            }
+          : null,
+      })
+    );
   }
 }
 
@@ -356,12 +413,10 @@ interface CenterPillConfig {
 function buildCenterPill(cfg: CenterPillConfig): HTMLElement {
   const pill = document.createElement('div');
   pill.className = 'center-pill';
-
   const eb = document.createElement('span');
   eb.className = 'center-pill__eyebrow';
   eb.textContent = cfg.eyebrow;
   pill.appendChild(eb);
-
   if (cfg.big) {
     const big = document.createElement('span');
     big.className = 'center-pill__big';
@@ -381,7 +436,6 @@ function buildCenterPill(cfg: CenterPillConfig): HTMLElement {
     s.textContent = cfg.sub;
     pill.appendChild(s);
   }
-
   if (cfg.button) {
     const btn = document.createElement('button');
     btn.className = `btn ${cfg.button.primary ? 'btn--primary' : 'btn--ghost'}`;
@@ -395,7 +449,6 @@ function buildCenterPill(cfg: CenterPillConfig): HTMLElement {
     }
     pill.appendChild(btn);
   }
-
   return pill;
 }
 
@@ -413,30 +466,38 @@ function renderDeck(me: PublicParticipant | undefined) {
     if (myVote === c) btn.classList.add('card-btn--selected');
     if (session.revealed) btn.disabled = true;
     btn.addEventListener('click', () => {
-      if (myVote === c) {
-        send({ type: 'vote', value: '' });
-      } else {
-        send({ type: 'vote', value: c });
-      }
+      if (!participantId) return;
+      sendAction({
+        action: 'vote',
+        participantId,
+        value: myVote === c ? '' : c,
+      });
     });
     li.appendChild(btn);
     deckEl.appendChild(li);
   }
 
   if (yourCardEl) {
-    yourCardEl.textContent = me?.hasVoted ? (session.revealed ? (me.vote ?? '—') : '●') : '—';
-    yourCardEl.style.color = me?.hasVoted ? 'var(--amber)' : 'var(--ink-mute)';
+    yourCardEl.textContent = me?.hasVoted
+      ? session.revealed
+        ? me.vote ?? '—'
+        : '●'
+      : '—';
+    (yourCardEl as HTMLElement).style.color = me?.hasVoted
+      ? 'var(--amber)'
+      : 'var(--ink-mute)';
   }
 
-  // reveal/reset toggle labels
   if (revealBtn) {
     revealBtn.disabled = session.revealed;
     revealBtn.textContent = session.revealed ? 'Revealed' : 'Reveal cards';
-    revealBtn.onclick = () => send({ type: 'reveal' });
+    revealBtn.onclick = () =>
+      sendAction({ action: 'reveal', participantId: participantId! });
   }
   if (resetBtn) {
     resetBtn.textContent = 'New round';
-    resetBtn.onclick = () => send({ type: 'reset' });
+    resetBtn.onclick = () =>
+      sendAction({ action: 'reset', participantId: participantId! });
   }
 }
 
@@ -473,7 +534,6 @@ function renderStats() {
     statConsensus.classList.toggle('stats__val--highlight', c === 'Unanimous');
   }
 
-  // Distribution bar chart across the deck's numeric cards
   if (statDist) {
     statDist.textContent = '';
     const counts = new Map<string, number>();
@@ -482,7 +542,6 @@ function renderStats() {
       counts.set(p.vote, (counts.get(p.vote) || 0) + 1);
     }
     const max = Math.max(1, ...counts.values());
-    // Order by deck order
     for (const card of session.deckCards) {
       const count = counts.get(card) || 0;
       if (count === 0) continue;
@@ -546,16 +605,21 @@ function consensusLabel(numericVotes: number[]): string {
 
 let storyDebounce: number | null = null;
 storyInput?.addEventListener('input', () => {
+  if (!participantId) return;
   const value = storyInput.value;
   if (storyDebounce) window.clearTimeout(storyDebounce);
   storyDebounce = window.setTimeout(() => {
-    send({ type: 'setStory', title: value });
-  }, 250);
+    sendAction({ action: 'setStory', participantId: participantId!, title: value });
+  }, 300);
 });
 
 deckSelect?.addEventListener('change', () => {
-  const deck = deckSelect.value as DeckPreset;
-  send({ type: 'setDeck', deck });
+  if (!participantId) return;
+  sendAction({
+    action: 'setDeck',
+    participantId,
+    deck: deckSelect.value as DeckPreset,
+  });
 });
 
 const copyLink = () => {
@@ -564,7 +628,6 @@ const copyLink = () => {
     .writeText(url)
     .then(() => showToast('Invite link copied.'))
     .catch(() => {
-      // Fallback: select the code visually
       showToast(url);
     });
 };
@@ -572,33 +635,45 @@ const copyLink = () => {
 copyLinkBtn?.addEventListener('click', copyLink);
 copyLinkBtn2?.addEventListener('click', copyLink);
 
+document.addEventListener('visibilitychange', () => {
+  // Reschedule with new interval. Fire immediately on visible so state is fresh.
+  if (pollTimer !== null) window.clearTimeout(pollTimer);
+  if (!document.hidden && participantId) {
+    pollOnce().then(() => schedulePoll());
+  } else {
+    schedulePoll();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  if (pollAbort) pollAbort.abort();
+  if (pollTimer !== null) window.clearTimeout(pollTimer);
+});
+
 // ─── Boot ──────────────────────────────────────────────────────────────────
 
-function boot() {
+async function boot() {
   if (!/^[A-Z0-9]{6}$/.test(code)) {
     location.href = '/';
     return;
   }
+  setConn('connecting');
   const stored = readStored();
   if (stored && stored.name) {
-    openSocket(stored.name, stored.participantId);
+    const ok = await joinApi(stored.name, stored.participantId);
+    if (ok) schedulePoll();
   } else if (dialog) {
     dialog.showModal();
-    dialogForm?.addEventListener('submit', (e) => {
+    dialogForm?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const name = (dialogName?.value || '').trim();
       if (!name) return;
       dialog.close();
       writeStored({ participantId: null, name });
-      openSocket(name, null);
+      const ok = await joinApi(name, null);
+      if (ok) schedulePoll();
     });
   }
 }
-
-window.addEventListener('beforeunload', () => {
-  manualClose = true;
-  if (reconnectTimer) window.clearTimeout(reconnectTimer);
-  if (ws && ws.readyState === WebSocket.OPEN) ws.close();
-});
 
 boot();
