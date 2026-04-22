@@ -5,8 +5,8 @@
   "description": "Anonymous story-point estimation for Scrum teams, deployable to Vercel.",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/client/landing.ts src/client/room.ts --bundle --outdir=public/js --format=esm --target=es2020 --minify",
-    "dev:client": "esbuild src/client/landing.ts src/client/room.ts --bundle --outdir=public/js --format=esm --target=es2020 --sourcemap",
+    "build": "esbuild src/client/landing.ts src/client/room.ts src/client/circuit-bg.ts --bundle --outdir=public/js --format=esm --target=es2020 --minify",
+    "dev:client": "esbuild src/client/landing.ts src/client/room.ts src/client/circuit-bg.ts --bundle --outdir=public/js --format=esm --target=es2020 --sourcemap",
     "dev": "npm run dev:client && tsx watch server-local.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json"
   },
