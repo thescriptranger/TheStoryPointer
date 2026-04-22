@@ -230,9 +230,9 @@ class Circuit {
   private drawBackdrop() {
     const ctx = this.ctx;
 
-    // Static traces — noticeably visible now
+    // Static traces
     ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(120, 180, 230, 0.28)';
+    ctx.strokeStyle = 'rgba(120, 180, 230, 0.18)';
     ctx.beginPath();
     for (const e of this.edges) {
       const p = e.path;
@@ -242,10 +242,10 @@ class Circuit {
     ctx.stroke();
 
     // Solder-joint node dots
-    ctx.fillStyle = 'rgba(130, 190, 235, 0.55)';
+    ctx.fillStyle = 'rgba(130, 190, 235, 0.36)';
     for (const n of this.nodes) {
       ctx.beginPath();
-      ctx.arc(n.x, n.y, 1.6, 0, Math.PI * 2);
+      ctx.arc(n.x, n.y, 1.5, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -298,17 +298,17 @@ class Circuit {
         Math.max(0, Math.min(1, headT))
       );
       ctx.save();
-      ctx.shadowColor = `rgba(${tone.rgb}, 0.95)`;
-      ctx.shadowBlur = 22;
-      ctx.fillStyle = `rgba(${tone.rgb}, 1)`;
+      ctx.shadowColor = `rgba(${tone.rgb}, 0.62)`;
+      ctx.shadowBlur = 14;
+      ctx.fillStyle = `rgba(${tone.rgb}, 0.65)`;
       ctx.beginPath();
-      ctx.arc(head.x, head.y, 3.2, 0, Math.PI * 2);
+      ctx.arc(head.x, head.y, 2.8, 0, Math.PI * 2);
       ctx.fill();
-      // Bright inner core
+      // Inner core
       ctx.shadowBlur = 0;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
       ctx.beginPath();
-      ctx.arc(head.x, head.y, 1.2, 0, Math.PI * 2);
+      ctx.arc(head.x, head.y, 1, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
 
@@ -342,7 +342,7 @@ class Circuit {
 
       ctx.save();
       const g = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius);
-      g.addColorStop(0, `rgba(${tone.rgb}, ${alpha * 0.75})`);
+      g.addColorStop(0, `rgba(${tone.rgb}, ${alpha * 0.5})`);
       g.addColorStop(1, `rgba(${tone.rgb}, 0)`);
       ctx.fillStyle = g;
       ctx.beginPath();
@@ -350,7 +350,7 @@ class Circuit {
       ctx.fill();
 
       if (alpha > 0.5) {
-        ctx.fillStyle = `rgba(${tone.rgb}, ${(alpha - 0.5) * 2})`;
+        ctx.fillStyle = `rgba(${tone.rgb}, ${(alpha - 0.5) * 1.3})`;
         ctx.beginPath();
         ctx.arc(node.x, node.y, 2.4 * f.size, 0, Math.PI * 2);
         ctx.fill();
@@ -441,10 +441,10 @@ function drawTrail(
 
     const g = ctx.createLinearGradient(gradFrom.x, gradFrom.y, gradTo.x, gradTo.y);
     g.addColorStop(0, `rgba(${tone.rgb}, 0)`);
-    g.addColorStop(1, `rgba(${tone.rgb}, 0.85)`);
+    g.addColorStop(1, `rgba(${tone.rgb}, 0.55)`);
 
     ctx.strokeStyle = g;
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);
     ctx.lineTo(p2.x, p2.y);
@@ -464,7 +464,7 @@ function init() {
   // Visible-only-if-canvas-works marker: a very faint teal wash. If the user
   // can see a slight teal cast over the page, the canvas is properly layered
   // above the body background.
-  canvas.style.backgroundColor = 'rgba(78, 240, 199, 0.015)';
+  canvas.style.backgroundColor = 'rgba(78, 240, 199, 0.008)';
   try {
     const c = new Circuit(canvas);
     // Expose for debugging from DevTools console.
